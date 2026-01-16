@@ -25,8 +25,6 @@ X = insurance.drop('charges', axis=1)
 y = insurance[['charges']]
 
 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, shuffle=True)
-tree = DecisionTreeRegressor(max_depth=5)
-tree.fit(X_train, y_train)
 
 # 50 points between max and min values
 age = np.linspace(insurance['age'].min(), insurance['age'].max(), 50)
@@ -60,15 +58,12 @@ for index, value in list(fixed_values.items()):
     # Horizontally stack it onto grid
     grid = np.hstack([grid, fixed_array])
 
-# Predict all combinations then reshape for easier plotting
-pred = tree.predict(grid).reshape(age_grid.shape)
-
-svr = SVR()
-scaler = StandardScaler()
 
 models = {
     "Random Forest" : RandomForestRegressor(),
-    "XGB" : XGBRegressor()
+    "XGB" : XGBRegressor(),
+    "Decision Tree" : DecisionTreeRegressor(max_depth=5),
+    "svr" : SVR(kernel='rbf', C=100, gamma='auto')
 }
 
 kfold = KFold(n_splits=5, shuffle=True, random_state=42)
@@ -90,6 +85,13 @@ for model_name, model in models.items():
         print(f"Mean Accuracy: {score.mean():.4f}")
     except Exception as e:
         print("failure")
+
+# Different scalers to avoid data leakage
+X_scaler = StandardScaler()
+y_scaler = StandardScaler()
+
+X_scaled = X_scaler.fit_transform(X_train)
+y_scaled = y_scaler.fit_transform(y_train.values.reshape(-1, 1)).ravel()
 
 # Making sure the right smoker and sex will be assigned
 def data_clean_helper(sex_col, smoker_col):
@@ -141,7 +143,6 @@ def data_clean(input):
     # Assigning values for each region
     data = define_region(data, value_index, region_col)
 
-
     return data
 
 # Function that predicts insurance using the data clean function
@@ -151,4 +152,5 @@ def predict_insurance(input):
 
     scaled_data = X_scaler.fit_transform([data])
     
+    # Make it back to the original scale to calculate metrics
     return svr.predict(scaled_data)[0]
