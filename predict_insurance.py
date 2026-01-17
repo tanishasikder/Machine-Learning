@@ -1,19 +1,16 @@
 import numpy as np
 import pandas as pd
-from sklearn.preprocessing import OneHotEncoder
-from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.model_selection import train_test_split, cross_val_score, KFold
 from sklearn.tree import DecisionTreeRegressor
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import mean_squared_error
 from sklearn.ensemble import RandomForestRegressor
-from xgboost import XGBRegressor
-from sklearn.model_selection import train_test_split, cross_val_score
-from sklearn.model_selection import KFold
 from sklearn.svm import SVR
-from sklearn.preprocessing import StandardScaler
+from xgboost import XGBRegressor
 
+# Load the data
 df = pd.read_csv('insurance.csv')
 
+# Find the categorical data and one-hot encode it
 categorical = df.select_dtypes(include=['object']).columns.tolist()
 encoder = OneHotEncoder(sparse_output=False)
 one_hot_encoder = encoder.fit_transform(df[categorical])
@@ -21,54 +18,27 @@ one_hot_df = pd.DataFrame(one_hot_encoder, columns=encoder.get_feature_names_out
 df_encoded = pd.concat([df, one_hot_df], axis=1)
 insurance = df_encoded.drop(categorical, axis=1)
 
+# Drop charges, use it to predict
 X = insurance.drop('charges', axis=1)
-y = insurance[['charges']]
+y = insurance['charges']  
 
 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, shuffle=True)
 
-# 50 points between max and min values
-age = np.linspace(insurance['age'].min(), insurance['age'].max(), 50)
-bmi = np.linspace(insurance['bmi'].min(), insurance['bmi'].max(), 50)
-
-# Makes two 2D arrays of possible pairings of age and bmi values
-age_grid, bmi_grid = np.meshgrid(age, bmi)
-
-# Defining fixed values for other features
-fixed_values = {
-    'children' : insurance['children'].median(),
-    'sex_male'  : 1,
-    'sex_female': 0,
-    'smoker_no' : 1,
-    'smoker_yes': 0,
-    'northeast' : 0,
-    'northwest' : 0,
-    'southeast' : 1,
-    'southwest' : 0
-}
-
-# Combining the grids into a single 2D array for prediction
-grid = np.c_[
-    age_grid.ravel(),
-    bmi_grid.ravel(),
-]
-
-# Adding the fixed features as additional columns
-for index, value in list(fixed_values.items()):
-    fixed_array = np.full_like(age_grid.ravel(), fixed_values[index]).reshape(-1, 1)
-    # Horizontally stack it onto grid
-    grid = np.hstack([grid, fixed_array])
-
-
+# All the models that will be used
 models = {
-    "Random Forest" : RandomForestRegressor(),
-    "XGB" : XGBRegressor(),
-    "Decision Tree" : DecisionTreeRegressor(max_depth=5),
-    "svr" : SVR(kernel='rbf', C=100, gamma='auto')
+    "Random Forest": RandomForestRegressor(random_state=42),
+    "XGBoost": XGBRegressor(random_state=42),
+    "Decision Tree": DecisionTreeRegressor(max_depth=5, random_state=42),
+    "SVR": SVR(kernel='rbf', C=100, gamma='auto')
 }
 
 kfold = KFold(n_splits=5, shuffle=True, random_state=42)
 
-# Trying out different models and calculating the scores. Using 5 folds
+print("=" * 60)
+print("Model Comparison (5-Fold Cross-Validation)")
+print("=" * 60)
+
+# Loop through all the models and use cross validation as a score
 for model_name, model in models.items():
     try:
         score = cross_val_score(
@@ -80,77 +50,94 @@ for model_name, model in models.items():
             n_jobs=-1,
             error_score='raise'
         )
-        print(f"Model: {model_name}")
+        print(f"\nModel: {model_name}")
         print(f"Scores: {score}")
-        print(f"Mean Accuracy: {score.mean():.4f}")
+        print(f"Mean R² Score: {score.mean():.4f} (+/- {score.std():.4f})")
     except Exception as e:
-        print("failure")
+        print(f"\nModel: {model_name}")
+        print(f"Error: {e}")
 
-# Different scalers to avoid data leakage
+print("\n" + "=" * 60)
+
+# Scaling 
 X_scaler = StandardScaler()
 y_scaler = StandardScaler()
 
 X_scaled = X_scaler.fit_transform(X_train)
 y_scaled = y_scaler.fit_transform(y_train.values.reshape(-1, 1)).ravel()
 
-# Making sure the right smoker and sex will be assigned
+# Training SVR model
+svr = SVR(kernel='rbf', C=100, gamma='auto')
+svr.fit(X_scaled, y_scaled)
+
+# Also train on test set for evaluation
+X_test_scaled = X_scaler.transform(X_test)
+y_test_scaled = y_scaler.transform(y_test.values.reshape(-1, 1)).ravel()
+
+print("\nFinal SVR Model Training Complete")
+print("=" * 60)
+
+# Helper functions
 def data_clean_helper(sex_col, smoker_col):
+    # Determines the sex based on the user input
     other_sex = "sex_female" if sex_col == "sex_male" else "sex_male"
+    # Determines smoking status based on suer input
     other_smoker = "smoker_no" if smoker_col == "smoker_yes" else "smoker_yes"
-    
     return other_sex, other_smoker
 
-# One region will have the value 1.0, the rest will have 0.0
 def define_region(data, value_index, region_col):
-    regions = ["northeast", "northwest", "southeast", "southwest"]
-
+    regions = ["region_northeast", "region_northwest", "region_southeast", "region_southwest"]
+    
+    # If the parameter region matches a region, it is marked with 1, otherwise 0
     for region in regions:
         if region == region_col:
-            data[value_index[region_col]] = 1.0
+            data[value_index[region]] = 1.0
         else:
-            data[value_index["region_" + region]] = 0.0
+            data[value_index[region]] = 0.0
     
     return data
 
+# Create column index mapping
 values = X.columns.values
 value_index = {col: i for i, col in enumerate(values)}
 
-def data_clean(input):
-    # Splitting the input values to handle the data
-    input_values = input.split(",")
+def data_clean(input_str):
+    input_values = input_str.split(",")
     data = [0] * len(value_index)
 
-    # Depending on the column, inputs are assigned differently
-    data[value_index['age']] = int(input_values[0])
+    # Numerical features
+    data[value_index['age']] = float(input_values[0])
     data[value_index['bmi']] = float(input_values[1])
     data[value_index['children']] = int(input_values[2])
 
-    # Categorical values are taken and added to the rest of the column name
+    # Categorical features 
     sex_col = "sex_" + input_values[3].strip().lower()
     smoker_col = "smoker_" + input_values[4].strip().lower()
     region_col = "region_" + input_values[5].strip().lower()
 
-    # Getting the sex and smoker columns
+    # Set sex and smoker columns
     other_sex, other_smoker = data_clean_helper(sex_col, smoker_col)
-
-    # Assigning values for the sex and smoker columns
+    
     data[value_index[sex_col]] = 1.0
     data[value_index[other_sex]] = 0.0
-
+    
     data[value_index[smoker_col]] = 1.0
     data[value_index[other_smoker]] = 0.0
 
-    # Assigning values for each region
+    # Set region columns
     data = define_region(data, value_index, region_col)
 
     return data
 
-# Function that predicts insurance using the data clean function
-def predict_insurance(input):
-
-    data = data_clean(input)
-
-    scaled_data = X_scaler.fit_transform([data])
+def predict_insurance(input_str):
+    data = data_clean(input_str)
     
-    # Make it back to the original scale to calculate metrics
-    return svr.predict(scaled_data)[0]
+    scaled_data = X_scaler.transform([data])
+    
+    # Get prediction in scaled space
+    scaled_prediction = svr.predict(scaled_data)[0]
+    
+    # Inverse transform to get actual dollar amount
+    actual_prediction = y_scaler.inverse_transform([[scaled_prediction]])[0][0]
+    
+    return actual_prediction
